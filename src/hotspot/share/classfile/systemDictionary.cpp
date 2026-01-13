@@ -54,6 +54,7 @@
 #include "memory/resourceArea.hpp"
 #include "memory/universe.hpp"
 #include "oops/access.inline.hpp"
+#include "oops/constantPool.inline.hpp"
 #include "oops/fieldStreams.inline.hpp"
 #include "oops/inlineKlass.inline.hpp"
 #include "oops/instanceKlass.hpp"
@@ -1994,7 +1995,7 @@ void SystemDictionary::add_nest_host_error(const constantPoolHandle& pool,
       // Only add a new entry to the resolution error table if one hasn't been found for this
       // constant pool index. In this case resolution succeeded but there's an error in this nest host
       // that we use the table to record.
-      //assert(pool->resolved_klass_at(which) != nullptr, "klass should be resolved if there is no entry");
+      assert(pool->resolved_klass_at(which) != nullptr, "klass should be resolved if there is no entry");
       ResolutionErrorTable::add_entry(pool, which, message.as_string(true /* on C-heap */));
     } else {
       // An existing entry means we had a true resolution failure (LinkageError) with our nest host, but we
