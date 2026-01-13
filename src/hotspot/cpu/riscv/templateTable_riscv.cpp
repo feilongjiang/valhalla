@@ -3053,6 +3053,8 @@ void TemplateTable::fast_storefield(TosState state) {
 
   // access field, must not clobber x13 - flags
   switch (bytecode()) {
+    case Bytecodes::_fast_vputfield:
+      __ call_Unimplemented();
     case Bytecodes::_fast_aputfield:
       __ store_heap_oop(field, x10, x28, x29, x15, IN_HEAP);
       break;
@@ -3134,6 +3136,9 @@ void TemplateTable::fast_accessfield(TosState state) {
 
   // access field
   switch (bytecode()) {
+    case Bytecodes::_fast_vgetfield:
+      __ call_Unimplemented();
+      break;
     case Bytecodes::_fast_agetfield:
       __ load_heap_oop(x10, field, x28, x29, IN_HEAP);
       __ verify_oop(x10);

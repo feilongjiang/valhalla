@@ -167,10 +167,10 @@ void VM_Version::common_initialize() {
       (unaligned_scalar.value() == MISALIGNED_SCALAR_FAST));
   }
 
-  if (FLAG_IS_DEFAULT(AlignVector)) {
-    FLAG_SET_DEFAULT(AlignVector,
-      unaligned_vector.value() != MISALIGNED_VECTOR_FAST);
-  }
+//  if (FLAG_IS_DEFAULT(AlignVector)) {
+//    FLAG_SET_DEFAULT(AlignVector,
+//      unaligned_vector.value() != MISALIGNED_VECTOR_FAST);
+//  }
 
 #ifdef __riscv_ztso
   // Hotspot is compiled with TSO support, it will only run on hardware which

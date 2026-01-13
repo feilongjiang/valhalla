@@ -620,6 +620,19 @@ frame::frame(void* ptr_sp, void* ptr_fp, void* pc) : _on_heap(false) {
 
 #endif
 
+// Check for a method with scalarized inline type arguments that needs
+// a stack repair and return the repaired sender stack pointer.
+
+intptr_t* frame::repair_sender_sp(nmethod* nm, intptr_t* sp, intptr_t** saved_fp_addr) {
+  Unimplemented();
+  return nullptr;
+}
+
+bool frame::was_augmented_on_entry(int& real_size) const {
+  Unimplemented();
+  return false;
+}
+
 void JavaFrameAnchor::make_walkable() {
   // last frame set?
   if (last_Java_sp() == nullptr) { return; }

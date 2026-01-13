@@ -5132,6 +5132,34 @@ void MacroAssembler::remove_frame(int framesize) {
   add(sp, sp, framesize);
 }
 
+// Move a value between registers/stack slots and update the reg_state
+bool MacroAssembler::move_helper(VMReg from, VMReg to, BasicType bt, RegState reg_state[]) {
+  Unimplemented();
+  return false;
+}
+
+// Read all fields from an inline type oop and store the values in registers/stack slots
+bool MacroAssembler::unpack_inline_helper(const GrowableArray<SigEntry>* sig, int& sig_index,
+                                          VMReg from, int& from_index, VMRegPair* to, int to_count, int& to_index,
+                                          RegState reg_state[]) {
+
+  Unimplemented();
+  return false;
+}
+
+// Pack fields back into an inline type oop
+bool MacroAssembler::pack_inline_helper(const GrowableArray<SigEntry>* sig, int& sig_index, int vtarg_index,
+                                        VMRegPair* from, int from_count, int& from_index, VMReg to,
+                                        RegState reg_state[], Register val_array) {
+  Unimplemented();
+  return false;
+}
+
+VMReg MacroAssembler::spill_reg_for(VMReg reg) {
+  Unimplemented();
+  return reg;
+}
+
 void MacroAssembler::reserved_stack_check() {
   // testing if reserved zone needs to be enabled
   Label no_reserved_zone_enabling;

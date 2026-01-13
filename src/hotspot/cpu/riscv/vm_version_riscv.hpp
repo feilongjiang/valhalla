@@ -32,7 +32,6 @@
 #include "runtime/arguments.hpp"
 #include "runtime/globals_extension.hpp"
 #include "utilities/globalDefinitions.hpp"
-#include "utilities/growableArray.hpp"
 #include "utilities/sizes.hpp"
 
 class RiscvHwprobe;
