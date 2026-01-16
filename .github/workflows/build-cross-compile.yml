@@ -58,7 +58,7 @@ jobs:
           # - arm
           # - s390x
           # - ppc64le
-          # - riscv64
+          - riscv64
         include:
           - target-cpu: aarch64
             gnu-arch: aarch64
@@ -85,12 +85,12 @@ jobs:
           #   debian-repository: https://httpredir.debian.org/debian/
           #   debian-version: trixie
           #   tolerate-sysroot-errors: false
-          # - target-cpu: riscv64
-          #   gnu-arch: riscv64
-          #   debian-arch: riscv64
-          #   debian-repository: https://httpredir.debian.org/debian/
-          #   debian-version: trixie
-          #   tolerate-sysroot-errors: false
+          - target-cpu: riscv64
+            gnu-arch: riscv64
+            debian-arch: riscv64
+            debian-repository: https://httpredir.debian.org/debian/
+            debian-version: trixie
+            tolerate-sysroot-errors: false
 
     steps:
       - name: 'Checkout the JDK source'
