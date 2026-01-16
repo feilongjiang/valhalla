@@ -1821,8 +1821,8 @@ void LIRGenerator::check_flat_array(LIR_Opr array, LIR_Opr value, CodeStub* slow
 void LIRGenerator::check_null_free_array(LIRItem& array, LIRItem& value, CodeEmitInfo* info) {
   LabelObj* L_end = new LabelObj();
   LIR_Opr tmp = new_register(T_METADATA);
-  __ check_null_free_array(array.result(), tmp);
-  __ branch(lir_cond_equal, L_end->label());
+  //__ check_null_free_array(array.result(), tmp);
+  //__ branch(lir_cond_equal, L_end->label());
   __ null_check(value.result(), info);
   __ branch_destination(L_end->label());
 }

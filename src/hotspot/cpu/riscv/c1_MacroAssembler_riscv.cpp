@@ -247,8 +247,13 @@ void C1_MacroAssembler::allocate_array(Register obj, Register len, Register tmp1
   verify_oop(obj);
 }
 
-void C1_MacroAssembler::build_frame(int framesize, int bang_size_in_bytes) {
+void C1_MacroAssembler::build_frame(int framesize, int bang_size_in_bytes,
+                                    int sp_offset_for_orig_pc, bool needs_stack_repair,
+                                    bool has_scalarized_args, Label* verified_inline_entry_label) {
   assert(bang_size_in_bytes >= framesize, "stack bang size incorrect");
+
+  assert(!needs_stack_repair && !has_scalarized_args, "");
+
   // Make sure there is enough stack space for this method's activation.
   // Note that we do this before creating a frame.
   generate_stack_overflow_check(bang_size_in_bytes);
@@ -259,11 +264,6 @@ void C1_MacroAssembler::build_frame(int framesize, int bang_size_in_bytes) {
   bs->nmethod_entry_barrier(this, nullptr /* slow_path */, nullptr /* continuation */, nullptr /* guard */);
 }
 
-void C1_MacroAssembler::remove_frame(int framesize) {
-  MacroAssembler::remove_frame(framesize);
-}
-
-
 void C1_MacroAssembler::verified_entry(bool breakAtEntry) {
   // If we have to make this method not-entrant we'll overwrite its
   // first instruction with a jump. For this action to be legal we
@@ -272,6 +272,12 @@ void C1_MacroAssembler::verified_entry(bool breakAtEntry) {
   IncompressibleScope scope(this); // keep the nop as 4 bytes for patching.
   assert_alignment(pc());
   nop();  // 4 bytes
+}
+
+int C1_MacroAssembler::scalarized_entry(const CompiledEntrySignature* ces, int frame_size_in_bytes, int bang_size_in_bytes,
+                                        int sp_offset_for_orig_pc, Label& verified_inline_entry_label, bool is_inline_ro_entry) {
+  Unimplemented();
+  return 0;
 }
 
 void C1_MacroAssembler::load_parameter(int offset_in_words, Register reg) {

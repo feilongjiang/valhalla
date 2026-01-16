@@ -435,7 +435,6 @@ static void gen_c2i_adapter(MacroAssembler *masm,
 
     { // Bypass the barrier for non-static methods
       __ lhu(t0, Address(xmethod, Method::access_flags_offset()));
-      //__ andsw(zr, rscratch1, JVM_ACC_STATIC);
       __ test_bit(t0, t0, exact_log2(JVM_ACC_STATIC));
       __ beqz(t0, L_skip_barrier); // non-static
     }
