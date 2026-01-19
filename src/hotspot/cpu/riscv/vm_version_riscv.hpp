@@ -33,6 +33,7 @@
 #include "runtime/globals_extension.hpp"
 #include "utilities/globalDefinitions.hpp"
 #include "utilities/sizes.hpp"
+#include "utilities/ostream.hpp"
 
 class RiscvHwprobe;
 

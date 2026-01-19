@@ -32,6 +32,7 @@
 #include "metaprogramming/enableIf.hpp"
 #include "oops/compressedOops.hpp"
 #include "utilities/powerOfTwo.hpp"
+#include "runtime/signature.hpp"
 
 // MacroAssembler extends Assembler by frequently used macros.
 //
