@@ -43,6 +43,7 @@
 #include "oops/compressedOops.inline.hpp"
 #include "oops/klass.inline.hpp"
 #include "oops/oop.hpp"
+#include "oops/resolvedFieldEntry.hpp"
 #include "runtime/interfaceSupport.inline.hpp"
 #include "runtime/javaThread.hpp"
 #include "runtime/jniHandles.inline.hpp"
@@ -3409,6 +3410,46 @@ void MacroAssembler::mov_metadata(Register dst, Metadata* obj) {
   movptr(dst, Address((address)obj, rspec));
 }
 
+void MacroAssembler::inline_layout_info(Register holder_klass, Register index, Register layout_info) {
+  assert_different_registers(holder_klass, index, layout_info);
+  InlineLayoutInfo array[2];
+  int size = (char*)&array[1] - (char*)&array[0]; // computing size of array elements
+  if (is_power_of_2(size)) {
+    slli(index, index, log2i_exact(size)); // Scale index by power of 2
+  } else {
+    mv(layout_info, size);
+    mul(index, index, layout_info); // Scale the index to be the entry index * array_element_size
+  }
+  ld(layout_info, Address(holder_klass, InstanceKlass::inline_layout_info_array_offset()));
+  add(layout_info, layout_info, Array<InlineLayoutInfo>::base_offset_in_bytes());
+  add(layout_info, layout_info, index);
+  la(layout_info, Address(layout_info));
+}
+
+void MacroAssembler::flat_field_copy(DecoratorSet decorators, Register src, Register dst,
+                                     Register inline_layout_info) {
+  BarrierSetAssembler* bs = BarrierSet::barrier_set()->barrier_set_assembler();
+  bs->flat_field_copy(this, decorators, src, dst, inline_layout_info);
+}
+
+void MacroAssembler::payload_offset(Register inline_klass, Register offset) {
+  ld(offset, Address(inline_klass, InlineKlass::adr_members_offset()));
+  lwu(offset, Address(offset, InlineKlass::payload_offset_offset()));
+}
+
+void MacroAssembler::payload_address(Register oop, Register data, Register inline_klass) {
+  assert_different_registers(data, t0);
+  // ((address) (void*) o) + vk->payload_offset();
+  Register offset = (data == oop) ? t0 : data;
+  payload_offset(inline_klass, offset);
+  if (data == oop) {
+    add(data, data, offset);
+  } else {
+    add(data, oop, offset);
+    la(data, Address(data));
+  }
+}
+
 // Writes to stack successive pages until offset reached to check for
 // stack overflow + shadow pages.  This clobbers tmp.
 void MacroAssembler::bang_stack_size(Register size, Register tmp) {
@@ -3492,6 +3533,74 @@ void MacroAssembler::null_check(Register reg, int offset) {
     // nothing to do, (later) access of M[reg + offset]
     // will provoke OS null exception if reg is null
   }
+}
+
+void MacroAssembler::test_field_is_null_free_inline_type(Register flags, Register temp_reg, Label& is_null_free_inline_type) {
+  test_bit(temp_reg, flags, ResolvedFieldEntry::is_null_free_inline_type_shift);
+  bnez(temp_reg, is_null_free_inline_type);
+}
+
+void MacroAssembler::test_field_is_not_null_free_inline_type(Register flags, Register temp_reg, Label& not_null_free_inline_type) {
+  test_bit(temp_reg, flags, ResolvedFieldEntry::is_null_free_inline_type_shift);
+  beqz(temp_reg, not_null_free_inline_type);
+}
+
+void MacroAssembler::test_field_is_flat(Register flags, Register temp_reg, Label& is_flat) {
+  test_bit(temp_reg, flags, ResolvedFieldEntry::is_flat_shift);
+  bnez(temp_reg, is_flat);
+}
+
+void MacroAssembler::test_markword_is_inline_type(Register markword, Label& is_inline_type) {
+  assert_different_registers(markword, t1);
+  mv(t1, markWord::inline_type_mask_in_place);
+  andr(markword, markword, t1);
+  mv(t1, markWord::inline_type_pattern);
+  beq(markword, t1, is_inline_type);
+}
+
+void MacroAssembler::test_oop_is_not_inline_type(Register object, Register tmp, Label& not_inline_type, bool can_be_null) {
+  assert_different_registers(tmp, t0);
+  if (can_be_null) {
+    beqz(object, not_inline_type);
+  }
+  const int is_inline_type_mask = markWord::inline_type_pattern;
+  ld(tmp, Address(object, oopDesc::mark_offset_in_bytes()));
+  mv(t0, is_inline_type_mask);
+  andr(tmp, tmp, t0);
+  bne(tmp, t0, not_inline_type);
+}
+
+void MacroAssembler::test_oop_prototype_bit(Register oop, Register temp_reg, int32_t tst_bit, bool jmp_set, Label& jmp_label) {
+  assert_different_registers(temp_reg, t0);
+  Label test_mark_word;
+  // load mark word
+  ld(temp_reg, Address(oop, oopDesc::mark_offset_in_bytes()));
+  // check displaced
+  test_bit(t0, temp_reg, exact_log2(markWord::unlocked_value));
+  bnez(t0, test_mark_word);
+  // slow path use klass prototype
+  load_prototype_header(temp_reg, oop);
+
+  bind(test_mark_word);
+  andi(temp_reg, temp_reg, tst_bit);
+  if (jmp_set) {
+    bnez(temp_reg, jmp_label);
+  } else {
+    beqz(temp_reg, jmp_label);
+  }
+}
+
+void MacroAssembler::test_flat_array_oop(Register oop, Register temp_reg, Label& is_flat_array) {
+  test_oop_prototype_bit(oop, temp_reg, markWord::flat_array_bit_in_place, true, is_flat_array);
+}
+
+void MacroAssembler::test_null_free_array_oop(Register oop, Register temp_reg, Label& is_null_free_array) {
+  test_oop_prototype_bit(oop, temp_reg, markWord::null_free_array_bit_in_place, true, is_null_free_array);
+}
+
+void MacroAssembler::test_flat_array_layout(Register lh, Label& is_flat_array) {
+  test_bit(t0, lh, exact_log2(Klass::_lh_array_tag_flat_value_bit_inplace));
+  bnez(t0, is_flat_array);
 }
 
 void MacroAssembler::access_store_at(BasicType type, DecoratorSet decorators,
@@ -5083,6 +5192,109 @@ void MacroAssembler::verify_secondary_supers_table(Register r_sub_klass,
   BLOCK_COMMENT("} verify_secondary_supers_table");
 }
 
+// Object / value buffer allocation...
+void MacroAssembler::allocate_instance(Register klass, Register new_obj,
+                                       Register tmp1, Register tmp2,
+                                       bool clear_fields, Label& alloc_failed)
+{
+  Label done, initialize_header, initialize_object, slow_case, slow_case_no_pop;
+  Register layout_size = tmp1;
+  assert(new_obj == x10, "needs to be x10");
+  assert_different_registers(klass, new_obj, tmp1, tmp2, t0);
+
+  // get instance_size in InstanceKlass (scaled to a count of bytes)
+  lwu(layout_size, Address(klass, Klass::layout_helper_offset()));
+  // test to see if it is malformed in some way
+  test_bit(t0, layout_size, exact_log2(Klass::_lh_instance_slow_path_bit));
+  bnez(t0, slow_case_no_pop);
+
+  // Allocate the instance:
+  //  If TLAB is enabled:
+  //    Try to allocate in the TLAB.
+  //    If fails, go to the slow path.
+  //    Initialize the allocation.
+  //    Exit.
+  //
+  //  Go to slow path.
+
+  if (UseTLAB) {
+    push_reg(klass);
+    tlab_allocate(new_obj, layout_size, 0, klass, tmp2, slow_case);
+    if (ZeroTLAB || (!clear_fields)) {
+      // the fields have been already cleared
+      j(initialize_header);
+    } else {
+      // initialize both the header and fields
+      j(initialize_object);
+    }
+
+    if (clear_fields) {
+      // The object is initialized before the header.  If the object size is
+      // zero, go directly to the header initialization.
+      bind(initialize_object);
+      int header_size = oopDesc::header_size() * HeapWordSize;
+      assert(is_aligned(header_size, BytesPerLong), "oop header size must be 8-byte-aligned");
+      subi(layout_size, layout_size, header_size);
+      beqz(layout_size, initialize_header);
+
+      // Initialize topmost object field, divide size by 8, check if odd and
+      // test if zero.
+
+  #ifdef ASSERT
+      // make sure instance_size was multiple of 8
+      Label L;
+      andi(t0, layout_size, 7);
+      beqz(t0, L);
+      stop("object size is not multiple of 8 - adjust this code");
+      bind(L);
+      // must be > 0, no extra check needed here
+  #endif
+
+      srli(layout_size, layout_size, LogBytesPerLong);
+
+      // initialize remaining object fields: instance_size was a multiple of 8
+      {
+        Label loop;
+        Register base = tmp2;
+
+        bind(loop);
+        slli(t0, layout_size, LogBytesPerLong);
+        add(t0, new_obj, t0);
+        sd(zr, Address(t0, header_size - 1*oopSize));
+        sub(layout_size, layout_size, 1);
+        bnez(layout_size, loop);
+      }
+    } // clear_fields
+
+    // initialize object header only.
+    bind(initialize_header);
+    pop_reg(klass);
+    Register mark_word = tmp2;
+    if (UseCompactObjectHeaders || Arguments::is_valhalla_enabled()) {
+      ld(mark_word, Address(klass, Klass::prototype_header_offset()));
+      sd(mark_word, Address(new_obj, oopDesc::mark_offset_in_bytes()));
+    } else {
+      mv(mark_word, (intptr_t)markWord::prototype().value());
+      sd(mark_word, Address(new_obj, oopDesc::mark_offset_in_bytes()));
+    }
+    if (!UseCompactObjectHeaders) {
+      store_klass_gap(new_obj, zr);  // zero klass gap for compressed oops
+      mv(tmp2, klass);               // preserve klass
+      store_klass(new_obj, tmp2);    // src klass reg is potentially compressed
+    }
+    j(done);
+  }
+
+  if (UseTLAB) {
+    bind(slow_case);
+    pop_reg(klass);
+  }
+  bind(slow_case_no_pop);
+  j(alloc_failed);
+
+  bind(done);
+}
+
 // Defines obj, preserves var_size_in_bytes, okay for tmp2 == var_size_in_bytes.
 void MacroAssembler::tlab_allocate(Register obj,
                                    Register var_size_in_bytes,
@@ -5439,6 +5651,16 @@ void MacroAssembler::load_method_holder(Register holder, Register method) {
   ld(holder, Address(method, Method::const_offset()));                      // ConstMethod*
   ld(holder, Address(holder, ConstMethod::constants_offset()));             // ConstantPool*
   ld(holder, Address(holder, ConstantPool::pool_holder_offset()));          // InstanceKlass*
+}
+
+void MacroAssembler::load_metadata(Register dst, Register src) {
+  if (UseCompactObjectHeaders) {
+    load_narrow_klass_compact(dst, src);
+  } else if (UseCompressedClassPointers) {
+    lwu(dst, Address(src, oopDesc::klass_offset_in_bytes()));
+  } else {
+    ld(dst, Address(src, oopDesc::klass_offset_in_bytes()));
+  }
 }
 
 // string indexof

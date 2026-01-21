@@ -239,13 +239,16 @@ void InterpreterMacroAssembler::load_resolved_klass_at_offset(
 // Kills:
 //      x12, x15
 void InterpreterMacroAssembler::gen_subtype_check(Register Rsub_klass,
-                                                  Label& ok_is_subtype) {
+                                                  Label& ok_is_subtype,
+                                                  bool profile) {
   assert(Rsub_klass != x10, "x10 holds superklass");
   assert(Rsub_klass != x12, "x12 holds 2ndary super array length");
   assert(Rsub_klass != x15, "x15 holds 2ndary super array scan ptr");
 
   // Profile the not-null value's klass.
-  profile_typecheck(x12, Rsub_klass, x15); // blows x12, reloads x15
+  if (profile) {
+    profile_typecheck(x12, Rsub_klass, x15); // blows x12, reloads x15
+  }
 
   // Do the check.
   check_klass_subtype(Rsub_klass, x10, x12, ok_is_subtype); // blows x12
@@ -988,7 +991,7 @@ void InterpreterMacroAssembler::profile_taken_branch(Register mdp) {
   }
 }
 
-void InterpreterMacroAssembler::profile_not_taken_branch(Register mdp) {
+void InterpreterMacroAssembler::profile_not_taken_branch(Register mdp, bool acmp) {
   if (ProfileInterpreter) {
     Label profile_continue;
 
@@ -1000,7 +1003,7 @@ void InterpreterMacroAssembler::profile_not_taken_branch(Register mdp) {
 
     // The method data pointer needs to be updated to correspond to
     // the next bytecode
-    update_mdp_by_constant(mdp, in_bytes(BranchData::branch_data_size()));
+    update_mdp_by_constant(mdp, acmp ? in_bytes(ACmpData::acmp_data_size()) : in_bytes(BranchData::branch_data_size()));
     bind(profile_continue);
   }
 }
@@ -1345,6 +1348,37 @@ void InterpreterMacroAssembler::profile_switch_case(Register index,
     bind(profile_continue);
   }
 }
+
+void InterpreterMacroAssembler::profile_acmp(Register mdp,
+                                             Register left,
+                                             Register right,
+                                             Register tmp) {
+  if (ProfileInterpreter) {
+    Label profile_continue;
+
+    // If no method data exists, go to profile_continue.
+    test_method_data_pointer(mdp, profile_continue);
+
+    mv(tmp, left);
+    profile_obj_type(tmp, Address(mdp, in_bytes(ACmpData::left_offset())), t1);
+
+    Label left_not_inline_type;
+    test_oop_is_not_inline_type(left, tmp, left_not_inline_type);
+    set_mdp_flag_at(mdp, ACmpData::left_inline_type_byte_constant());
+    bind(left_not_inline_type);
+
+    mv(tmp, right);
+    profile_obj_type(tmp, Address(mdp, in_bytes(ACmpData::right_offset())), t1);
+
+    Label right_not_inline_type;
+    test_oop_is_not_inline_type(right, tmp, right_not_inline_type);
+    set_mdp_flag_at(mdp, ACmpData::right_inline_type_byte_constant());
+    bind(right_not_inline_type);
+
+    bind(profile_continue);
+  }
+}
+
 
 void InterpreterMacroAssembler::notify_method_entry() {
   // Whenever JVMTI is interp_only_mode, method entry/exit events are sent to
@@ -1898,6 +1932,93 @@ void InterpreterMacroAssembler::get_method_counters(Register method,
   ld(mcs, Address(method, Method::method_counters_offset()));
   beqz(mcs, skip); // No MethodCounters allocated, OutOfMemory
   bind(has_counters);
+}
+
+void InterpreterMacroAssembler::allocate_instance(Register klass, Register new_obj,
+                                                  Register tmp1, Register tmp2,
+                                                  bool clear_fields, Label& alloc_failed) {
+  MacroAssembler::allocate_instance(klass, new_obj, tmp1, tmp2, clear_fields, alloc_failed);
+  if (DTraceAllocProbes) {
+    // Trigger dtrace event for fastpath
+    push(atos);
+    call_VM_leaf(CAST_FROM_FN_PTR(address, static_cast<int (*)(oopDesc*)>(SharedRuntime::dtrace_object_alloc)), new_obj);
+    pop(atos);
+  }
+}
+
+void InterpreterMacroAssembler::read_flat_field(Register entry,
+                                                Register field_index, Register field_offset,
+                                                Register temp, Register obj) {
+  Label failed_alloc, slow_path, done;
+  const Register src = field_offset;
+  const Register alloc_temp = x28;
+  const Register dst_temp   = field_index;
+  const Register layout_info = temp;
+  assert_different_registers(obj, entry, field_index, field_offset, temp, alloc_temp, t0);
+
+  load_unsigned_byte(temp, Address(entry, in_bytes(ResolvedFieldEntry::flags_offset())));
+  // If the field is nullable, jump to slow path
+  test_bit(temp, temp, ResolvedFieldEntry::is_null_free_inline_type_shift);
+  beqz(temp, slow_path);
+
+  // Grab the inline field klass
+  ld(t0, Address(entry, in_bytes(ResolvedFieldEntry::field_holder_offset())));
+  inline_layout_info(t0, field_index, layout_info);
+
+  const Register field_klass = dst_temp;
+  ld(field_klass, Address(layout_info, in_bytes(InlineLayoutInfo::klass_offset())));
+
+  // allocate buffer
+  push_reg(obj); // save holder
+  allocate_instance(field_klass, obj, alloc_temp, t1, false, failed_alloc);
+
+  // Have an oop instance buffer, copy into it
+  payload_address(obj, dst_temp, field_klass);  // danger, uses t0
+  pop_reg(alloc_temp);             // restore holder
+  add(src, alloc_temp, field_offset);
+  la(src, Address(src));
+  // call_VM_leaf, clobbers a few regs, save restore new obj
+  push_reg(obj);
+  flat_field_copy(IS_DEST_UNINITIALIZED, src, dst_temp, layout_info);
+  pop_reg(obj);
+  j(done);
+
+  bind(failed_alloc);
+  pop_reg(obj);
+  bind(slow_path);
+  call_VM(obj, CAST_FROM_FN_PTR(address, InterpreterRuntime::read_flat_field), obj, entry);
+
+  bind(done);
+  membar(MacroAssembler::StoreStore);
+}
+
+void InterpreterMacroAssembler::write_flat_field(Register entry, Register field_offset,
+                                                 Register tmp1, Register tmp2,
+                                                 Register obj) {
+  assert_different_registers(entry, field_offset, tmp1, tmp2, obj);
+  Label slow_path, done;
+
+  load_unsigned_byte(tmp1, Address(entry, in_bytes(ResolvedFieldEntry::flags_offset())));
+  test_field_is_not_null_free_inline_type(tmp1, t0, slow_path);
+
+  null_check(x10); // FIXME JDK-8341120
+
+  add(obj, obj, field_offset);
+
+  load_klass(tmp1, x10);
+  payload_address(x10, x10, tmp1);
+
+  Register layout_info = field_offset;
+  load_unsigned_short(tmp1, Address(entry, in_bytes(ResolvedFieldEntry::field_index_offset())));
+  ld(tmp2, Address(entry, in_bytes(ResolvedFieldEntry::field_holder_offset())));
+  inline_layout_info(tmp2, tmp1, layout_info);
+
+  flat_field_copy(IN_HEAP, x10, obj, layout_info);
+  j(done);
+
+  bind(slow_path);
+  call_VM(noreg, CAST_FROM_FN_PTR(address, InterpreterRuntime::write_flat_field), obj, x10, entry);
+  bind(done);
 }
 
 void InterpreterMacroAssembler::load_method_entry(Register cache, Register index, int bcp_offset) {

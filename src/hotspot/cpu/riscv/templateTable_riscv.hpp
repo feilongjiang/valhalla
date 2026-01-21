@@ -34,4 +34,6 @@ static void invokevirtual_helper(Register index, Register recv,
 // Helpers
 static void index_check(Register array, Register index);
 
+static void invoke_is_substitutable(Register aobj, Register bobj, Label& is_subst, Label& not_subst);
+
 #endif // CPU_RISCV_TEMPLATETABLE_RISCV_HPP
