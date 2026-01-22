@@ -254,6 +254,8 @@ class MacroAssembler: public Assembler {
   void test_oop_prototype_bit(Register oop, Register temp_reg, int32_t tst_bit, bool jmp_set, Label& jmp_label);
   void test_flat_array_oop(Register klass, Register temp_reg, Label& is_flat_array);
   void test_null_free_array_oop(Register oop, Register temp_reg, Label& is_null_free_array);
+  void test_non_flat_array_oop(Register oop, Register temp_reg, Label&is_non_flat_array);
+  void test_non_null_free_array_oop(Register oop, Register temp_reg, Label&is_non_null_free_array);
 
   // Check array klass layout helper for flat or null-free arrays...
   void test_flat_array_layout(Register lh, Label& is_flat_array);
