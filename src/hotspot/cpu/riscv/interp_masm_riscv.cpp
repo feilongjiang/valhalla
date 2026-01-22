@@ -1349,6 +1349,89 @@ void InterpreterMacroAssembler::profile_switch_case(Register index,
   }
 }
 
+template <class ArrayData> void InterpreterMacroAssembler::profile_array_type(Register mdp,
+                                                                              Register array,
+                                                                              Register tmp) {
+  if (ProfileInterpreter) {
+    Label profile_continue;
+
+    // If no method data exists, go to profile_continue.
+    test_method_data_pointer(mdp, profile_continue);
+
+    mv(tmp, array);
+    profile_obj_type(tmp, Address(mdp, in_bytes(ArrayData::array_offset())), t1);
+
+    Label not_flat;
+    test_non_flat_array_oop(array, tmp, not_flat);
+
+    set_mdp_flag_at(mdp, ArrayData::flat_array_byte_constant());
+
+    bind(not_flat);
+
+    Label not_null_free;
+    test_non_null_free_array_oop(array, tmp, not_null_free);
+
+    set_mdp_flag_at(mdp, ArrayData::null_free_array_byte_constant());
+
+    bind(not_null_free);
+
+    bind(profile_continue);
+  }
+}
+
+template void InterpreterMacroAssembler::profile_array_type<ArrayLoadData>(Register mdp,
+                                                                           Register array,
+                                                                           Register tmp);
+template void InterpreterMacroAssembler::profile_array_type<ArrayStoreData>(Register mdp,
+                                                                            Register array,
+                                                                            Register tmp);
+
+void InterpreterMacroAssembler::profile_multiple_element_types(Register mdp, Register element, Register tmp, const Register tmp2) {
+  if (ProfileInterpreter) {
+    Label profile_continue;
+
+    // If no method data exists, go to profile_continue.
+    test_method_data_pointer(mdp, profile_continue);
+
+    Label done, update;
+    bnez(element, update);
+    set_mdp_flag_at(mdp, BitData::null_seen_byte_constant());
+    j(done);
+
+    bind(update);
+    load_klass(tmp, element);
+
+    // Record the object type.
+    record_klass_in_profile(tmp, mdp, tmp2);
+
+    bind(done);
+
+    // The method data pointer needs to be updated.
+    update_mdp_by_constant(mdp, in_bytes(ArrayStoreData::array_store_data_size()));
+
+    bind(profile_continue);
+  }
+}
+
+void InterpreterMacroAssembler::profile_element_type(Register mdp,
+                                                     Register element,
+                                                     Register tmp) {
+  if (ProfileInterpreter) {
+    Label profile_continue;
+
+    // If no method data exists, go to profile_continue.
+    test_method_data_pointer(mdp, profile_continue);
+
+    mv(tmp, element);
+    profile_obj_type(tmp, Address(mdp, in_bytes(ArrayLoadData::element_offset())), t1);
+
+    // The method data pointer needs to be updated.
+    update_mdp_by_constant(mdp, in_bytes(ArrayLoadData::array_load_data_size()));
+
+    bind(profile_continue);
+  }
+}
+
 void InterpreterMacroAssembler::profile_acmp(Register mdp,
                                              Register left,
                                              Register right,

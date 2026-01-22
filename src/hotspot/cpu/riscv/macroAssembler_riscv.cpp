@@ -3598,6 +3598,14 @@ void MacroAssembler::test_null_free_array_oop(Register oop, Register temp_reg, L
   test_oop_prototype_bit(oop, temp_reg, markWord::null_free_array_bit_in_place, true, is_null_free_array);
 }
 
+void MacroAssembler::test_non_flat_array_oop(Register oop, Register temp_reg, Label&is_non_flat_array) {
+  test_oop_prototype_bit(oop, temp_reg, markWord::flat_array_bit_in_place, false, is_non_flat_array);
+}
+
+void MacroAssembler::test_non_null_free_array_oop(Register oop, Register temp_reg, Label&is_non_null_free_array) {
+  test_oop_prototype_bit(oop, temp_reg, markWord::null_free_array_bit_in_place, false, is_non_null_free_array);
+}
+
 void MacroAssembler::test_flat_array_layout(Register lh, Label& is_flat_array) {
   test_bit(t0, lh, exact_log2(Klass::_lh_array_tag_flat_value_bit_inplace));
   bnez(t0, is_flat_array);

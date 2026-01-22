@@ -773,7 +773,7 @@ void TemplateTable::aaload() {
   // x10: array
   // x11: index
   index_check(x10, x11); // leaves index in x11
-  // __ profile_array_type<ArrayLoadData>(x12, x10, x14);
+  __ profile_array_type<ArrayLoadData>(x12, x10, x14);
   if (UseArrayFlattening) {
     Label is_flat_array, done;
 
@@ -794,7 +794,7 @@ void TemplateTable::aaload() {
     __ shadd(x10, x11, x10, t0, LogBytesPerHeapOop);
     __ load_heap_oop(x10, Address(x10), x28, x29, IS_ARRAY);
   }
-  // __ profile_element_type(x12, x10, x14);
+  __ profile_element_type(x12, x10, x14);
 }
 
 void TemplateTable::baload() {
@@ -1077,8 +1077,8 @@ void TemplateTable::aastore() {
 
   index_check(x13, x12);     // kills x11
 
-  // __ profile_array_type<ArrayStoreData>(x14, x13, x15);
-  // __ profile_multiple_element_types(x14, x10, x15, x16);
+  __ profile_array_type<ArrayStoreData>(x14, x13, x15);
+  __ profile_multiple_element_types(x14, x10, x15, x16);
 
   __ addi(x14, x12, arrayOopDesc::base_offset_in_bytes(T_OBJECT) >> LogBytesPerHeapOop);
   __ shadd(x14, x14, x13, x14, LogBytesPerHeapOop);
