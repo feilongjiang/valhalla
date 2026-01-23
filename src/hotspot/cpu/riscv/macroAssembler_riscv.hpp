@@ -1312,6 +1312,8 @@ public:
   void build_frame(int framesize);
   void remove_frame(int framesize);
 
+  void verified_entry(Compile* C, int sp_inc);
+
   // Inline type specific methods
   #include "asm/macroAssembler_common.hpp"
 
@@ -1322,6 +1324,7 @@ public:
   bool pack_inline_helper(const GrowableArray<SigEntry>* sig, int& sig_index, int vtarg_index,
                           VMRegPair* from, int from_count, int& from_index, VMReg to,
                           RegState reg_state[], Register val_array);
+  int extend_stack_for_inline_args(int args_on_stack);
   VMReg spill_reg_for(VMReg reg);
 
   void reserved_stack_check();

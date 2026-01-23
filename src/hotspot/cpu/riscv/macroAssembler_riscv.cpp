@@ -5357,6 +5357,33 @@ void MacroAssembler::remove_frame(int framesize) {
   add(sp, sp, framesize);
 }
 
+#ifdef COMPILER2
+// C2 compiled method's prolog code
+// Moved here from riscv.ad to support Valhalla code belows
+void MacroAssembler::verified_entry(Compile* C, int sp_inc) {
+  if (C->clinit_barrier_on_entry()) {
+    assert(!C->method()->holder()->is_not_initialized(), "initialization should have been started");
+
+    Label L_skip_barrier;
+
+    mov_metadata(t1, C->method()->holder()->constant_encoding());
+    clinit_barrier(t1, t0, &L_skip_barrier);
+    far_jump(RuntimeAddress(SharedRuntime::get_handle_wrong_method_stub()));
+    bind(L_skip_barrier);
+  }
+
+  int bangsize = C->output()->bang_size_in_bytes();
+  if (C->output()->need_stack_bang(bangsize))
+    generate_stack_overflow_check(bangsize);
+
+  // n.b. frame size includes space for return pc and fp
+  const long framesize = C->output()->frame_size_in_bytes();
+  build_frame(framesize);
+
+  assert(!C->needs_stack_repair(), "unimplemented");
+}
+#endif // COMPILER2
+
 // Move a value between registers/stack slots and update the reg_state
 bool MacroAssembler::move_helper(VMReg from, VMReg to, BasicType bt, RegState reg_state[]) {
   Unimplemented();
@@ -5376,6 +5403,13 @@ bool MacroAssembler::unpack_inline_helper(const GrowableArray<SigEntry>* sig, in
 bool MacroAssembler::pack_inline_helper(const GrowableArray<SigEntry>* sig, int& sig_index, int vtarg_index,
                                         VMRegPair* from, int from_count, int& from_index, VMReg to,
                                         RegState reg_state[], Register val_array) {
+  Unimplemented();
+  return false;
+}
+
+// Calculate the extra stack space required for packing or unpacking inline
+// args and adjust the stack pointer
+int MacroAssembler::extend_stack_for_inline_args(int args_on_stack) {
   Unimplemented();
   return false;
 }
