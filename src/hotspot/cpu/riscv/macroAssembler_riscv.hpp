@@ -34,6 +34,8 @@
 #include "utilities/powerOfTwo.hpp"
 #include "runtime/signature.hpp"
 
+class ciInlineKlass;
+
 // MacroAssembler extends Assembler by frequently used macros.
 //
 // Instructions for which a 'better' code sequence exists depending
@@ -139,6 +141,7 @@ class MacroAssembler: public Assembler {
 
   // These always tightly bind to MacroAssembler::call_VM_base
   // bypassing the virtual implementation
+  void super_call_VM_leaf(address entry_point);
   void super_call_VM_leaf(address entry_point, Register arg_0);
   void super_call_VM_leaf(address entry_point, Register arg_0, Register arg_1);
   void super_call_VM_leaf(address entry_point, Register arg_0, Register arg_1, Register arg_2);
@@ -1312,11 +1315,14 @@ public:
   void build_frame(int framesize);
   void remove_frame(int framesize);
 
+  void save_stack_increment(int sp_inc, int frame_size);
+
   void verified_entry(Compile* C, int sp_inc);
 
   // Inline type specific methods
   #include "asm/macroAssembler_common.hpp"
 
+  int store_inline_type_fields_to_buf(ciInlineKlass* vk, bool from_interpreter = true);
   bool move_helper(VMReg from, VMReg to, BasicType bt, RegState reg_state[]);
   bool unpack_inline_helper(const GrowableArray<SigEntry>* sig, int& sig_index,
                             VMReg from, int& from_index, VMRegPair* to, int to_count, int& to_index,
@@ -1326,6 +1332,7 @@ public:
                           RegState reg_state[], Register val_array);
   int extend_stack_for_inline_args(int args_on_stack);
   VMReg spill_reg_for(VMReg reg);
+  void remove_frame(int initial_framesize, bool needs_stack_repair);
 
   void reserved_stack_check();
 

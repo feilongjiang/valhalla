@@ -113,6 +113,7 @@ private:
   void logic_op_reg(Register dst, Register left, Register right, LIR_Code code);
   void logic_op_imm(Register dst, Register left, int right, LIR_Code code);
 
+  void move(LIR_Opr src, LIR_Opr dst);
 public:
 
   void emit_cmove(LIR_Op4* op);

@@ -771,7 +771,7 @@ void LIR_Assembler::emit_op0(LIR_Op0* op) {
       break;
 
     case lir_check_orig_pc:
-      check_orig_pc();
+      check_orig_pc(RISCV_ONLY(op->result_opr()));
       break;
 
     default:

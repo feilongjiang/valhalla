@@ -836,18 +836,89 @@ OopMapSet* Runtime1::generate_code_for(StubId id, StubAssembler* sasm) {
 
     case StubId::c1_buffer_inline_args_id:
     case StubId::c1_buffer_inline_args_no_receiver_id:
-    case StubId::c1_load_flat_array_id:
-    case StubId::c1_store_flat_array_id:
-    case StubId::c1_substitutability_check_id:
       {
-        StubFrame f(sasm, "unimplemented entry", dont_gc_arguments, does_not_return);
+        assert(false, "unimplemented");
+        const char* name = (id == StubId::c1_buffer_inline_args_id) ?
+          "buffer_inline_args" : "buffer_inline_args_no_receiver";
+        StubFrame f(sasm, name, dont_gc_arguments);
+        OopMap* map = save_live_registers(sasm);
+        Register method = x9;   // Incoming
+        address entry = (id == StubId::c1_buffer_inline_args_id) ?
+          CAST_FROM_FN_PTR(address, buffer_inline_args) :
+          CAST_FROM_FN_PTR(address, buffer_inline_args_no_receiver);
+        // This is called from a C1 method's scalarized entry point
+        // where x10-x17 may be holding live argument values so we can't
+        // return the result in x10 as the other stubs do. LR is used as
+        // a temporary below to avoid the result being clobbered by
+        // restore_live_registers. It's saved and restored by
+        // StubAssembler::prologue and epilogue anyway.
+        int call_offset = __ call_RT(ra, noreg, entry, method);
+        oop_maps = new OopMapSet();
+        oop_maps->add_gc_map(call_offset, map);
+        restore_live_registers(sasm);
+        __ mv(x18, ra);
+        __ verify_oop(x18);  // x18: an array of buffered value objects
+      }
+      break;
+
+    case StubId::c1_load_flat_array_id:
+      {
+        StubFrame f(sasm, "load_flat_array", dont_gc_arguments);
         OopMap* map = save_live_registers(sasm);
 
-        __ mv(x10, (int)id);
-        int call_offset = __ call_RT(noreg, noreg, CAST_FROM_FN_PTR(address, unimplemented_entry), x10);
+        // Called with store_parameter and not C abi
+
+        f.load_argument(1, x10); // x10,: array
+        f.load_argument(0, x11); // x11,: index
+        int call_offset = __ call_RT(x10, noreg, CAST_FROM_FN_PTR(address, load_flat_array), x10, x11);
+
+        // Ensure the stores that initialize the buffer are visible
+        // before many subsequent store that publishes this reference.
+        __ membar(MacroAssembler::StoreStore);
+
         oop_maps = new OopMapSet();
         oop_maps->add_gc_map(call_offset, map);
         restore_live_registers_except_r10(sasm);
+
+        // x10: loaded element at array[index]
+        __ verify_oop(x10);
+      }
+      break;
+
+    case StubId::c1_store_flat_array_id:
+      {
+        StubFrame f(sasm, "store_flat_array", dont_gc_arguments);
+        OopMap* map = save_live_registers(sasm);
+
+        // Called with store_parameter and not C abi
+
+        f.load_argument(2, x10); // x10: array
+        f.load_argument(1, x11); // x11: index
+        f.load_argument(0, x12); // x12: value
+        int call_offset = __ call_RT(noreg, noreg, CAST_FROM_FN_PTR(address, store_flat_array), x10, x11, x12);
+
+        oop_maps = new OopMapSet();
+        oop_maps->add_gc_map(call_offset, map);
+        restore_live_registers_except_r10(sasm);
+      }
+      break;
+
+    case StubId::c1_substitutability_check_id:
+      {
+        StubFrame f(sasm, "substitutability_check", dont_gc_arguments);
+        OopMap* map = save_live_registers(sasm);
+
+        // Called with store_parameter and not C abi
+
+        f.load_argument(1, x11); // x11,: left
+        f.load_argument(0, x12); // x12,: right
+        int call_offset = __ call_RT(noreg, noreg, CAST_FROM_FN_PTR(address, substitutability_check), x11, x12);
+
+        oop_maps = new OopMapSet();
+        oop_maps->add_gc_map(call_offset, map);
+        restore_live_registers_except_r10(sasm);
+
+        // x10,: are the two operands substitutable
       }
       break;
 
@@ -894,7 +965,7 @@ OopMapSet* Runtime1::generate_code_for(StubId id, StubAssembler* sasm) {
 
     case StubId::c1_throw_incompatible_class_change_error_id:
       {
-        StubFrame f(sasm, "throw_incompatible_class_cast_exception", dont_gc_arguments, does_not_return);
+        StubFrame f(sasm, "throw_incompatible_class_change_error", dont_gc_arguments, does_not_return);
         oop_maps = generate_exception_throw(sasm,
                                             CAST_FROM_FN_PTR(address, throw_incompatible_class_change_error), false);
       }
@@ -1180,6 +1251,8 @@ OopMapSet* Runtime1::generate_code_for(StubId id, StubAssembler* sasm) {
       break;
 
     default:
+      // FIXME: For unhandled trap_id this code fails with assert during vm intialization
+      // rather than insert a call to unimplemented_entry
       {
         StubFrame f(sasm, "unimplemented entry", dont_gc_arguments, does_not_return);
         __ mv(x10, (int)id);

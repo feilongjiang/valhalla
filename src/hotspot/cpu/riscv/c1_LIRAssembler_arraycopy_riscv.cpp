@@ -274,6 +274,19 @@ void LIR_Assembler::arraycopy_assert(Register src, Register dst, Register tmp, c
   }
 }
 
+void LIR_Assembler::arraycopy_inlinetype_check(Register obj, Register tmp, CodeStub* slow_path, bool is_dest, bool null_check) {
+  if (null_check) {
+    __ beqz(obj, *slow_path->entry(), true);
+  }
+  if (is_dest) {
+    __ test_null_free_array_oop(obj, tmp, *slow_path->entry());
+    // TODO 8350865 Flat no longer implies null-free, so we need to check for flat dest. Can we do better here?
+    __ test_flat_array_oop(obj, tmp, *slow_path->entry());
+  } else {
+    __ test_flat_array_oop(obj, tmp, *slow_path->entry());
+  }
+}
+
 void LIR_Assembler::emit_arraycopy(LIR_OpArrayCopy* op) {
   ciArrayKlass *default_type = op->expected_type();
   Register src = op->src()->as_register();
@@ -287,6 +300,13 @@ void LIR_Assembler::emit_arraycopy(LIR_OpArrayCopy* op) {
   int flags = op->flags();
   BasicType basic_type = default_type != nullptr ? default_type->element_type()->basic_type() : T_ILLEGAL;
   if (is_reference_type(basic_type)) { basic_type = T_OBJECT; }
+
+  if (flags & LIR_OpArrayCopy::src_inlinetype_check) {
+    arraycopy_inlinetype_check(src, tmp, stub, false, (flags & LIR_OpArrayCopy::src_null_check));
+  }
+  if (flags & LIR_OpArrayCopy::dst_inlinetype_check) {
+    arraycopy_inlinetype_check(dst, tmp, stub, true, (flags & LIR_OpArrayCopy::dst_null_check));
+  }
 
   // if we don't know anything, just go through the generic arraycopy
   if (default_type == nullptr) {

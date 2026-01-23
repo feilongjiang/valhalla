@@ -3064,7 +3064,13 @@ void LIRGenerator::do_Base(Base* x) {
     // in the entry point (see comments in frame::deoptimize). If so, deoptimize only now that we have the right state.
     CodeEmitInfo* info = new CodeEmitInfo(scope()->start()->state()->copy(ValueStack::StateBefore, 0), nullptr, false);
     CodeStub* deopt_stub = new DeoptimizeStub(info, Deoptimization::Reason_none, Deoptimization::Action_none);
+#ifdef RISCV
+    LIR_Opr result = new_register(T_METADATA);
+    __ append(new LIR_Op0(lir_check_orig_pc, result));
+    __ cmp(lir_cond_notEqual, result, LIR_OprFact::metadataConst(nullptr));
+#else
     __ append(new LIR_Op0(lir_check_orig_pc));
+#endif
     __ branch(lir_cond_notEqual, deopt_stub);
   }
 

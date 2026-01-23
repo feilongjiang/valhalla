@@ -33,11 +33,14 @@
 #include "c1/c1_Runtime1.hpp"
 #include "c1/c1_ValueStack.hpp"
 #include "ci/ciArrayKlass.hpp"
+#include "ci/ciInlineKlass.hpp"
 #include "ci/ciInstance.hpp"
+#include "ci/ciObjArrayKlass.hpp"
 #include "code/compiledIC.hpp"
 #include "gc/shared/collectedHeap.hpp"
 #include "nativeInst_riscv.hpp"
 #include "oops/objArrayKlass.hpp"
+#include "oops/oop.inline.hpp"
 #include "runtime/frame.inline.hpp"
 #include "runtime/sharedRuntime.hpp"
 #include "utilities/powerOfTwo.hpp"
@@ -355,7 +358,7 @@ int LIR_Assembler::emit_unwind_handler() {
 
   // remove the activation and dispatch to the unwind handler
   __ block_comment("remove_frame and dispatch to the unwind handler");
-  __ remove_frame(initial_frame_size_in_bytes());
+  __ remove_frame(initial_frame_size_in_bytes(), needs_stack_repair());
   __ far_jump(RuntimeAddress(Runtime1::entry_for(StubId::c1_unwind_exception_id)));
 
   // Emit the slow path assembly
@@ -396,8 +399,12 @@ int LIR_Assembler::emit_deopt_handler() {
 void LIR_Assembler::return_op(LIR_Opr result, C1SafepointPollStub* code_stub) {
   assert(result->is_illegal() || !result->is_single_cpu() || result->as_register() == x10, "word returns are in x10");
 
+  if (InlineTypeReturnedAsFields) {
+    assert(!IninlineTypeReturnedAsFields, "not supported yet");
+  }
+
   // Pop the stack before the safepoint code
-  __ remove_frame(initial_frame_size_in_bytes());
+  __ remove_frame(initial_frame_size_in_bytes(), needs_stack_repair());
 
   if (StackReservedPages > 0 && compilation()->has_reserved_stack_access()) {
     __ reserved_stack_check();
@@ -410,8 +417,7 @@ void LIR_Assembler::return_op(LIR_Opr result, C1SafepointPollStub* code_stub) {
 }
 
 int LIR_Assembler::store_inline_type_fields_to_buf(ciInlineKlass* vk) {
-  Unimplemented();
-  return 0;
+  return (__ store_inline_type_fields_to_buf(vk, false));
 }
 
 int LIR_Assembler::safepoint_poll(LIR_Opr tmp, CodeEmitInfo* info) {
@@ -455,10 +461,10 @@ void LIR_Assembler::const2reg(LIR_Opr src, LIR_Opr dest, LIR_PatchCode patch_cod
 
     case T_OBJECT:
     case T_ARRAY:
-      if (patch_code == lir_patch_none) {
-        jobject2reg(c->as_jobject(), dest->as_register());
-      } else {
+      if (patch_code != lir_patch_none) {
         jobject2reg_with_patching(dest->as_register(), info);
+      } else {
+        jobject2reg(c->as_jobject(), dest->as_register());
       }
       break;
 
@@ -862,6 +868,21 @@ void LIR_Assembler::mem2reg(LIR_Opr src, LIR_Opr dest, BasicType type, LIR_Patch
   }
 }
 
+void LIR_Assembler::move(LIR_Opr src, LIR_Opr dst) {
+  assert(dst->is_cpu_register(), "must be");
+  assert(dst->type() == src->type(), "must be");
+
+  if (src->is_cpu_register()) {
+    reg2reg(src, dst);
+  } else if (src->is_stack()) {
+    stack2reg(src, dst, dst->type());
+  } else if (src->is_constant()) {
+    const2reg(src, dst, lir_patch_none, nullptr);
+  } else {
+    ShouldNotReachHere();
+  }
+}
+
 void LIR_Assembler::emit_op3(LIR_Op3* op) {
   switch (op->code()) {
     case lir_idiv: // fall through
@@ -1016,7 +1037,7 @@ void LIR_Assembler::emit_alloc_obj(LIR_OpAllocObj* op) {
 void LIR_Assembler::emit_alloc_array(LIR_OpAllocArray* op) {
   Register len = op->len()->as_register();
 
-  if (UseSlowPath ||
+  if (UseSlowPath || op->always_slow_path() ||
       (!UseFastNewObjectArray && is_reference_type(op->type())) ||
       (!UseFastNewTypeArray   && !is_reference_type(op->type()))) {
     __ j(*op->stub()->entry());
@@ -1100,8 +1121,14 @@ void LIR_Assembler::typecheck_helper_slowcheck(ciKlass *k, Register obj, Registe
       // See if we get an immediate positive hit
       __ beq(k_RInfo, t0, *success_target);
       // check for self
-      __ beq(klass_RInfo, k_RInfo, *success_target);
-
+      if (k->is_loaded() && k->is_obj_array_klass()) {
+        // For a direct pointer comparison, we need the refined array klass pointer
+        ciKlass* k_refined = ciObjArrayKlass::make(k->as_obj_array_klass()->element_klass());
+        __ mov_metadata(t0, k_refined->constant_encoding());
+        __ beq(klass_RInfo, t0, *success_target);
+      } else {
+        __ beq(klass_RInfo, k_RInfo, *success_target);
+      }
       __ subi(sp, sp, 2 * wordSize); // 2: store k_RInfo and klass_RInfo
       __ sd(k_RInfo, Address(sp, 0));             // sub klass
       __ sd(klass_RInfo, Address(sp, wordSize));  // super klass
@@ -1195,16 +1222,37 @@ void LIR_Assembler::emit_typecheck_helper(LIR_OpTypeCheck *op, Label* success, L
 
   assert_different_registers(obj, k_RInfo, klass_RInfo);
 
-  if (should_profile) {
-    profile_object(md, data, obj, k_RInfo, klass_RInfo, obj_is_null);
-  } else {
-    __ beqz(obj, *obj_is_null);
+  if (op->need_null_check()) {
+    if (should_profile) {
+      Register mdo = klass_RInfo;
+      __ mov_metadata(mdo, md->constant_encoding());
+      Label not_null;
+      __ bnez(obj, not_null);
+      // Object is null, update MDO and exit
+      Address data_addr = __ form_address(t1, mdo, md->byte_offset_of_slot(data, DataLayout::flags_offset()));
+      __ lbu(t0, data_addr);
+      __ ori(t0, t0, BitData::null_seen_byte_constant());
+      __ sb(t0, data_addr);
+      __ j(*obj_is_null);
+      __ bind(not_null);
+      Label update_done;
+      Register recv = k_RInfo;
+      __ load_klass(recv, obj);
+      type_profile_helper(mdo, md, data, recv, &update_done);
+      Address counter_addr(mdo, md->byte_offset_of_slot(data, CounterData::count_offset()));
+      __ increment(counter_addr, DataLayout::counter_increment);
+
+      __ bind(update_done);
+    } else {
+      __ beqz(obj, *obj_is_null);
+    }
   }
 
   typecheck_loaded(op, k, k_RInfo);
   __ verify_oop(obj);
 
   if (op->fast_check()) {
+    assert(!k->is_loaded() || !k->is_obj_array_klass(), "Use refined array for a direct pointer comparison");
     // get object class
     // not a safepoint as obj null check happens earlier
     __ load_klass(t0, obj, t1);
@@ -1249,7 +1297,18 @@ void LIR_Assembler::emit_opTypeCheck(LIR_OpTypeCheck* op) {
 }
 
 void LIR_Assembler::emit_opFlattenedArrayCheck(LIR_OpFlattenedArrayCheck* op) {
-  Unimplemented();
+  // We are loading/storing from/to an array that *may* be a flat array (the
+  // declared type is Object[], abstract[], interface[] or VT.ref[]).
+  // If this array is a flat array, take the slow path.
+  __ test_flat_array_oop(op->array()->as_register(), op->tmp()->as_register(), *op->stub()->entry());
+  if (!op->value()->is_illegal()) {
+    // The array is not a flat array, but it might be null-free. If we are storing
+    // a null into a null-free array, take the slow path (which will throw NPE).
+    Label skip;
+    __ bnez(op->value()->as_register(), skip);
+    __ test_null_free_array_oop(op->array()->as_register(), op->tmp()->as_register(), *op->stub()->entry());
+    __ bind(skip);
+  }
 }
 
 void LIR_Assembler::emit_opNullFreeArrayCheck(LIR_OpNullFreeArrayCheck* op) {
@@ -1266,7 +1325,76 @@ void LIR_Assembler::emit_opNullFreeArrayCheck(LIR_OpNullFreeArrayCheck* op) {
 }
 
 void LIR_Assembler::emit_opSubstitutabilityCheck(LIR_OpSubstitutabilityCheck* op) {
-  Unimplemented();
+  Label L_oops_equal;
+  Label L_oops_not_equal;
+  Label L_end;
+
+  Register left  = op->left()->as_register();
+  Register right = op->right()->as_register();
+
+  __ beq(left, right, L_oops_equal);
+
+  // (1) Null check -- if one of the operands is null, the other must not be null (because
+  //     the two references are not equal), so they are not substitutable,
+  //     FIXME: do null check only if the operand is nullable
+  {
+    __ beqz(left, L_oops_not_equal);
+    __ beqz(right, L_oops_not_equal);
+  }
+
+  ciKlass* left_klass = op->left_klass();
+  ciKlass* right_klass = op->right_klass();
+
+  // (2) Inline type check -- if either of the operands is not a inline type,
+  //     they are not substitutable. We do this only if we are not sure that the
+  //     operands are inline type
+  if ((left_klass == nullptr || right_klass == nullptr) ||// The klass is still unloaded, or came from a Phi node.
+      !left_klass->is_inlinetype() || !right_klass->is_inlinetype()) {
+    Register tmp1  = op->tmp1()->as_register();
+    __ mv(tmp1, markWord::inline_type_pattern);
+    __ ld(t0, Address(left, oopDesc::mark_offset_in_bytes()));
+    __ andr(tmp1, tmp1, t0);
+    __ ld(t0, Address(right, oopDesc::mark_offset_in_bytes()));
+    __ andr(tmp1, tmp1, t0);
+    __ mv(t0, (u1)markWord::inline_type_pattern);
+    __ bne(tmp1, t0, L_oops_not_equal);
+  }
+
+  // (3) Same klass check: if the operands are of different klasses, they are not substitutable.
+  if (left_klass != nullptr && left_klass->is_inlinetype() && left_klass == right_klass) {
+    // No need to load klass -- the operands are statically known to be the same inline klass.
+    __ j(*op->stub()->entry());
+  } else {
+    Register left_klass_op = op->left_klass_op()->as_register();
+    Register right_klass_op = op->right_klass_op()->as_register();
+
+    if (UseCompressedClassPointers) {
+      __ lwu(left_klass_op,  Address(left,  oopDesc::klass_offset_in_bytes()));
+      __ lwu(right_klass_op, Address(right, oopDesc::klass_offset_in_bytes()));
+    } else {
+      __ ld(left_klass_op,  Address(left,  oopDesc::klass_offset_in_bytes()));
+      __ ld(right_klass_op, Address(right, oopDesc::klass_offset_in_bytes()));
+    }
+    __ beq(left_klass_op, right_klass_op, *op->stub()->entry(), true); // same klass -> do slow check
+    // fall through to L_oops_not_equal
+  }
+
+  __ bind(L_oops_not_equal);
+  move(op->not_equal_result(), op->result_opr());
+  __ j(L_end);
+
+  __ bind(L_oops_equal);
+  move(op->equal_result(), op->result_opr());
+  __ j(L_end);
+
+  // We've returned from the stub. X10 contains 0x0 IFF the two
+  // operands are not substitutable. (Don't compare against 0x1 in case the
+  // C compiler is naughty)
+  __ bind(*op->stub()->continuation());
+  __ beqz(x10, L_oops_not_equal); // (call_stub() == 0x0) -> not_equal
+  move(op->equal_result(), op->result_opr()); // (call_stub() != 0x0) -> equal
+  // fall-through
+  __ bind(L_end);
 }
 
 void LIR_Assembler::emit_profile_inline_type(LIR_OpProfileInlineType* op) {
@@ -1293,8 +1421,8 @@ void LIR_Assembler::emit_profile_inline_type(LIR_OpProfileInlineType* op) {
   __ bind(not_inline_type);
 }
 
-void LIR_Assembler::check_orig_pc() {
-  Unimplemented();
+void LIR_Assembler::check_orig_pc(LIR_Opr result) {
+  __ ld(result->as_register(), frame_map()->address_for_orig_pc_addr());
 }
 
 void LIR_Assembler::emit_compare_and_swap(LIR_OpCompareAndSwap* op) {
@@ -1418,7 +1546,7 @@ void LIR_Assembler::call(LIR_OpJavaCall* op, relocInfo::relocType rtype) {
     bailout("reloc call address stub overflow");
     return;
   }
-  add_call_info(code_offset(), op->info());
+  add_call_info(code_offset(), op->info(), op->maybe_return_as_fields());
   __ post_call_nop();
 }
 
@@ -1429,7 +1557,7 @@ void LIR_Assembler::ic_call(LIR_OpJavaCall* op) {
     bailout("reloc call address stub overflow");
     return;
   }
-  add_call_info(code_offset(), op->info());
+  add_call_info(code_offset(), op->info(), op->maybe_return_as_fields());
   __ post_call_nop();
 }
 

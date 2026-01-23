@@ -26,6 +26,7 @@
 
 #include "asm/assembler.hpp"
 #include "asm/assembler.inline.hpp"
+#include "ci/ciInlineKlass.hpp"
 #include "code/compiledIC.hpp"
 #include "compiler/disassembler.hpp"
 #include "gc/shared/barrierSet.hpp"
@@ -791,6 +792,10 @@ void MacroAssembler::call_VM_leaf(address entry_point, Register arg_0,
   pass_arg1(this, arg_1);
   pass_arg2(this, arg_2);
   call_VM_leaf_base(entry_point, 3);
+}
+
+void MacroAssembler::super_call_VM_leaf(address entry_point) {
+  MacroAssembler::call_VM_leaf_base(entry_point, 1);
 }
 
 void MacroAssembler::super_call_VM_leaf(address entry_point, Register arg_0) {
@@ -3584,9 +3589,9 @@ void MacroAssembler::test_oop_prototype_bit(Register oop, Register temp_reg, int
   bind(test_mark_word);
   andi(temp_reg, temp_reg, tst_bit);
   if (jmp_set) {
-    bnez(temp_reg, jmp_label);
+    bnez(temp_reg, jmp_label, true);
   } else {
-    beqz(temp_reg, jmp_label);
+    beqz(temp_reg, jmp_label, true);
   }
 }
 
@@ -5357,6 +5362,92 @@ void MacroAssembler::remove_frame(int framesize) {
   add(sp, sp, framesize);
 }
 
+void MacroAssembler::remove_frame(int initial_framesize, bool needs_stack_repair) {
+  if (needs_stack_repair) {
+    assert(!needs_stack_repair, "unimplemented");
+    // The method has a scalarized entry point (where fields of value object arguments
+    // are passed through registers and stack), and a non-scalarized entry point (where
+    // value object arguments are given as oops). The non-scalarized entry point will
+    // first load each field of value object arguments and store them in registers and on
+    // the stack in a way compatible with the scalarized entry point. To do so, some extra
+    // stack space might be reserved (if argument registers are not enough). On leaving the
+    // method, this space must be freed.
+    //
+    // In case we used the non-scalarized entry point the stack looks like this:
+    //
+    // | Arguments from caller     |
+    // |---------------------------|  <-- caller's SP
+    // | Saved LR #1               |
+    // | Saved FP #1               |
+    // |---------------------------|
+    // | Extension space for       |
+    // |   inline arg (un)packing  |
+    // |---------------------------|  <-- start of this method's frame
+    // | Saved LR #2               |
+    // | Saved FP #2               |
+    // |---------------------------|  <-- FP
+    // | sp_inc                    |
+    // | method locals             |
+    // |---------------------------|  <-- SP
+    //
+    // There are two copies of FP and LR on the stack. They will be identical at
+    // first, but that can change.
+    // If the caller has been deoptimized, LR #1 will be patched to point at the
+    // deopt blob, and LR #2 will still point into the old method.
+    // If the saved FP (x8) was not used as the frame pointer, but to store an
+    // oop, the GC will be aware only of FP #1 as the spilled location of x29 and
+    // will fix only this one. Overall, FP/LR #2 are not reliable and are simply
+    // needed to add space between the extension space and the locals, as there
+    // would be between the real arguments and the locals if we don't need to
+    // do unpacking (from the scalarized entry point).
+    //
+    // When restoring, one must then load FP #1 into x8, and LR #1 into x1,
+    // while keeping in mind that from the scalarized entry point, there will be
+    // only one copy of each. Indeed, in the case we used the scalarized calling
+    // convention, the stack looks like this:
+    //
+    // | Arguments from caller     |
+    // |---------------------------|  <-- caller's SP / start of this method's frame
+    // | Saved LR                  |
+    // | Saved FP                  |
+    // |---------------------------|  <-- FP
+    // | sp_inc                    |
+    // | method locals             |
+    // |---------------------------|  <-- SP
+    //
+    // The sp_inc stack slot holds the total size of the frame including the
+    // extension space minus two words for the saved FP and LR. That is how to
+    // find FP/LR #1. This size is expressed in bytes. Be careful when using it
+    // from C++ in pointer arithmetic; you might need to divide it by wordSize.
+    //
+    // One can find sp_inc since the start the method's frame is SP + initial_framesize.
+
+    int sp_inc_offset = initial_framesize - 3 * wordSize;  // Immediately below saved LR and FP
+
+    ld(t0, Address(sp, sp_inc_offset));
+    add(sp, sp, t0);
+    ld(fp, Address(sp, 0));
+    ld(ra, Address(sp, wordSize));
+    add(sp, sp, 2 * wordSize);
+  } else {
+    remove_frame(initial_framesize);
+  }
+}
+
+void MacroAssembler::save_stack_increment(int sp_inc, int frame_size) {
+  int real_frame_size = frame_size + sp_inc;
+  assert(sp_inc == 0 || sp_inc > 2*wordSize, "invalid sp_inc value");
+  assert(real_frame_size >= 2*wordSize, "frame size must include FP/LR space");
+  assert((real_frame_size & (StackAlignmentInBytes-1)) == 0, "frame size not aligned");
+
+  int sp_inc_offset = frame_size - 3 * wordSize;  // Immediately below saved LR and FP
+
+  // Subtract two words for the saved FP and LR as these will be popped
+  // separately. See remove_frame above.
+  mv(t0, real_frame_size - 2*wordSize);
+  sd(t0, Address(sp, sp_inc_offset));
+}
+
 #ifdef COMPILER2
 // C2 compiled method's prolog code
 // Moved here from riscv.ad to support Valhalla code belows
@@ -5383,6 +5474,101 @@ void MacroAssembler::verified_entry(Compile* C, int sp_inc) {
   assert(!C->needs_stack_repair(), "unimplemented");
 }
 #endif // COMPILER2
+
+int MacroAssembler::store_inline_type_fields_to_buf(ciInlineKlass* vk, bool from_interpreter) {
+  assert(InlineTypeReturnedAsFields, "Inline types should never be returned as fields");
+  // An inline type might be returned. If fields are in registers we
+  // need to allocate an inline type instance and initialize it with
+  // the value of the fields.
+  Label skip;
+  // We only need a new buffered inline type if a new one is not returned
+  test_bit(t0, x10, exact_log2(0));
+  beqz(t0, skip, true);
+  int call_offset = -1;
+
+  // Be careful not to clobber x11-x17 which hold returned fields
+  // Also do not use callee-saved registers as these may be live in the interpreter
+  Register tmp1 = x28, tmp2 = x29, klass = x30, x10_preserved = x7;
+
+  // The following code is similar to allocate_instance but has some slight differences,
+  // e.g. object size is always not zero, sometimes it's constant; storing klass ptr after
+  // allocating is not necessary if vk != nullptr, etc. allocate_instance is not aware of these.
+  Label slow_case;
+  // 1. Try to allocate a new buffered inline instance either from TLAB or eden space
+  mv(x10_preserved, x10); // save x10 for slow_case since *_allocate may corrupt it when allocation failed
+
+  if (vk != nullptr) {
+    // Called from C1, where the return type is statically known.
+    movptr(klass, (address)vk->get_InlineKlass());
+    jint lh = vk->layout_helper();
+    assert(lh != Klass::_lh_neutral_value, "inline class in return type must have been resolved");
+    if (UseTLAB && !Klass::layout_helper_needs_slow_path(lh)) {
+      tlab_allocate(x10, noreg, lh, tmp1, tmp2, slow_case);
+    } else {
+      j(slow_case);
+    }
+  } else {
+    // Call from interpreter. x10 contains ((the InlineKlass* of the return type) | 0x01)
+    andi(klass, x10, -2);
+    if (UseTLAB) {
+      lwu(tmp2, Address(klass, Klass::layout_helper_offset()));
+      test_bit(t0, tmp2, exact_log2(Klass::_lh_instance_slow_path_bit));
+      bnez(t0, slow_case);
+      tlab_allocate(x10, tmp2, 0, tmp1, tmp2, slow_case);
+    } else {
+      j(slow_case);
+    }
+  }
+  if (UseTLAB) {
+    // 2. Initialize buffered inline instance header
+    Register buffer_obj = x10;
+    if (UseCompactObjectHeaders) {
+      ld(t0, Address(klass, Klass::prototype_header_offset()));
+      sd(t0, Address(buffer_obj, oopDesc::mark_offset_in_bytes()));
+    } else {
+      mv(t0, (intptr_t)markWord::inline_type_prototype().value());
+      sd(t0, Address(buffer_obj, oopDesc::mark_offset_in_bytes()));
+      store_klass_gap(buffer_obj, zr);
+      if (vk == nullptr) {
+        // store_klass corrupts klass, so save it for later use (interpreter case only).
+        mv(tmp1, klass);
+      }
+      store_klass(buffer_obj, klass);
+      klass = tmp1;
+    }
+    // 3. Initialize its fields with an inline class specific handler
+    if (vk != nullptr) {
+      far_call(RuntimeAddress(vk->pack_handler())); // no need for call info as this will not safepoint.
+    } else {
+      ld(tmp1, Address(klass, InlineKlass::adr_members_offset()));
+      ld(tmp1, Address(tmp1, InlineKlass::pack_handler_offset()));
+      jalr(tmp1);
+    }
+
+    membar(MacroAssembler::StoreStore);
+    j(skip);
+  } else {
+    // Must have already branched to slow_case above.
+    DEBUG_ONLY(should_not_reach_here());
+  }
+  bind(slow_case);
+  // We failed to allocate a new inline type, fall back to a runtime
+  // call. Some oop field may be live in some registers but we can't
+  // tell. That runtime call will take care of preserving them
+  // across a GC if there's one.
+  mv(x10, x10_preserved);
+
+  if (from_interpreter) {
+    super_call_VM_leaf(StubRoutines::store_inline_type_fields_to_buf());
+  } else {
+    far_call(RuntimeAddress(StubRoutines::store_inline_type_fields_to_buf()));
+    call_offset = offset();
+  }
+  membar(MacroAssembler::StoreStore);
+
+  bind(skip);
+  return call_offset;
+}
 
 // Move a value between registers/stack slots and update the reg_state
 bool MacroAssembler::move_helper(VMReg from, VMReg to, BasicType bt, RegState reg_state[]) {
