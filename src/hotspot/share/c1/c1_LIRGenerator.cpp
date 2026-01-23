@@ -2950,7 +2950,9 @@ void LIRGenerator::profile_null_free_array(LIRItem array, ciMethodData* md, ciPr
   LabelObj* L_end = new LabelObj();
   LIR_Opr tmp = new_register(T_METADATA);
   __ check_null_free_array(array.result(), tmp);
-
+#ifdef RISCV
+  __ cmp(lir_cond_equal, tmp, LIR_OprFact::metadataConst(nullptr));
+#endif
   profile_flags(md, data, ArrayStoreData::null_free_array_byte_constant(), lir_cond_equal);
 }
 
