@@ -2626,9 +2626,6 @@ void TemplateTable::pop_and_check_object(Register r) {
 void TemplateTable::getfield_or_static(int byte_no, bool is_static, RewriteControl rc) {
   const Register cache     = x12;
   const Register obj       = x14;
-  const Register klass     = x15;
-  const Register inline_klass = x17;
-  const Register field_index = x29;
   const Register index     = x13;
   const Register tos_state = x13;
   const Register off       = x9;
@@ -2637,10 +2634,6 @@ void TemplateTable::getfield_or_static(int byte_no, bool is_static, RewriteContr
 
   resolve_cache_and_index_for_field(byte_no, cache, index);
   jvmti_post_field_access(cache, index, is_static, false);
-
-  // Valhalla extras
-  __ load_unsigned_short(field_index, Address(cache, in_bytes(ResolvedFieldEntry::field_index_offset())));
-  __ ld(klass, Address(cache, ResolvedFieldEntry::field_holder_offset()));
 
   load_resolved_field_entry(obj, cache, tos_state, off, flags, is_static);
 
@@ -2712,11 +2705,11 @@ void TemplateTable::getfield_or_static(int byte_no, bool is_static, RewriteContr
       }
       __ j(Done);
       __ bind(is_flat);
-        // field is flat (null-free or nullable with a null-marker)
-        __ mv(x10, obj);
-        __ read_flat_field(cache, field_index, off, inline_klass /* temp */, x10);
-        __ verify_oop(x10);
-        __ push(atos);
+      // field is flat (null-free or nullable with a null-marker)
+      __ mv(x10, obj);
+      __ read_flat_field(cache, x10);
+      __ verify_oop(x10);
+      __ push(atos);
       if (rc == may_rewrite) {
         patch_bytecode(Bytecodes::_fast_vgetfield, bc, x11);
       }
@@ -3355,10 +3348,8 @@ void TemplateTable::fast_accessfield(TosState state) {
   switch (bytecode()) {
     case Bytecodes::_fast_vgetfield:
       {
-        Register index = x14, tmp = x17;
         // field is flat
-        __ load_unsigned_short(index, Address(x12, in_bytes(ResolvedFieldEntry::field_index_offset())));
-        __ read_flat_field(x12, index, x11, tmp, x10);
+        __ read_flat_field(x12, x10);
         __ verify_oop(x10);
       }
       break;

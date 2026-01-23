@@ -2029,49 +2029,8 @@ void InterpreterMacroAssembler::allocate_instance(Register klass, Register new_o
   }
 }
 
-void InterpreterMacroAssembler::read_flat_field(Register entry,
-                                                Register field_index, Register field_offset,
-                                                Register temp, Register obj) {
-  Label failed_alloc, slow_path, done;
-  const Register src = field_offset;
-  const Register alloc_temp = x28;
-  const Register dst_temp   = field_index;
-  const Register layout_info = temp;
-  assert_different_registers(obj, entry, field_index, field_offset, temp, alloc_temp, t0);
-
-  load_unsigned_byte(temp, Address(entry, in_bytes(ResolvedFieldEntry::flags_offset())));
-  // If the field is nullable, jump to slow path
-  test_bit(temp, temp, ResolvedFieldEntry::is_null_free_inline_type_shift);
-  beqz(temp, slow_path);
-
-  // Grab the inline field klass
-  ld(t0, Address(entry, in_bytes(ResolvedFieldEntry::field_holder_offset())));
-  inline_layout_info(t0, field_index, layout_info);
-
-  const Register field_klass = dst_temp;
-  ld(field_klass, Address(layout_info, in_bytes(InlineLayoutInfo::klass_offset())));
-
-  // allocate buffer
-  push_reg(obj); // save holder
-  allocate_instance(field_klass, obj, alloc_temp, t1, false, failed_alloc);
-
-  // Have an oop instance buffer, copy into it
-  payload_address(obj, dst_temp, field_klass);  // danger, uses t0
-  pop_reg(alloc_temp);             // restore holder
-  add(src, alloc_temp, field_offset);
-  la(src, Address(src));
-  // call_VM_leaf, clobbers a few regs, save restore new obj
-  push_reg(obj);
-  flat_field_copy(IS_DEST_UNINITIALIZED, src, dst_temp, layout_info);
-  pop_reg(obj);
-  j(done);
-
-  bind(failed_alloc);
-  pop_reg(obj);
-  bind(slow_path);
+void InterpreterMacroAssembler::read_flat_field(Register entry, Register obj) {
   call_VM(obj, CAST_FROM_FN_PTR(address, InterpreterRuntime::read_flat_field), obj, entry);
-
-  bind(done);
   membar(MacroAssembler::StoreStore);
 }
 
