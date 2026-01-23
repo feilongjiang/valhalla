@@ -1270,7 +1270,27 @@ void LIR_Assembler::emit_opSubstitutabilityCheck(LIR_OpSubstitutabilityCheck* op
 }
 
 void LIR_Assembler::emit_profile_inline_type(LIR_OpProfileInlineType* op) {
-  Unimplemented();
+  Register obj = op->obj()->as_register();
+  Register tmp = op->tmp()->as_pointer_register();
+  bool not_null = op->not_null();
+  int flag = op->flag();
+
+  assert_different_registers(tmp, t0, t1);
+
+  Label not_inline_type;
+  if (!not_null) {
+    __ beqz(obj, not_inline_type);
+  }
+
+  __ test_oop_is_not_inline_type(obj, tmp, not_inline_type);
+
+  Address mdo_addr = as_Address(op->mdp()->as_address_ptr(), t1);
+  __ lbu(tmp, mdo_addr);
+  __ mv(t0, flag);
+  __ orr(tmp, tmp, t0);
+  __ sb(tmp, mdo_addr);
+
+  __ bind(not_inline_type);
 }
 
 void LIR_Assembler::check_orig_pc() {
