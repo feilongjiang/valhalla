@@ -246,7 +246,13 @@ void NewObjectArrayStub::emit_code(LIR_Assembler* ce) {
   __ bind(_entry);
   assert(_length->as_register() == x9, "length must in x9");
   assert(_klass_reg->as_register() == x13, "klass_reg must in x13");
-  __ far_call(RuntimeAddress(Runtime1::entry_for(StubId::c1_new_object_array_id)));
+
+  if (_is_null_free) {
+    __ far_call(RuntimeAddress(Runtime1::entry_for(StubId::c1_new_null_free_array_id)));
+  } else {
+    __ far_call(RuntimeAddress(Runtime1::entry_for(StubId::c1_new_object_array_id)));
+  }
+
   ce->add_call_info_here(_info);
   ce->verify_oop_map(_info);
   assert(_result->as_register() == x10, "result must in x10");
@@ -256,7 +262,16 @@ void NewObjectArrayStub::emit_code(LIR_Assembler* ce) {
 void MonitorEnterStub::emit_code(LIR_Assembler* ce) {
   assert(__ rsp_offset() == 0, "frame size should be fixed");
   __ bind(_entry);
-  ce->store_parameter(_obj_reg->as_register(),  1);
+
+  if (_throw_ie_stub != nullptr) {
+    // When we come here, _obj_reg has already been checked to be non-null.
+    __ ld(t0, Address(_obj_reg->as_register(), oopDesc::mark_offset_in_bytes()));
+    __ mv(t1, markWord::inline_type_pattern);
+    __ andr(t0, t0, t1);
+    __ beq(t0, t1, *_throw_ie_stub->entry());
+  }
+
+  ce->store_parameter(_obj_reg->as_register(), 1);
   ce->store_parameter(_lock_reg->as_register(), 0);
   StubId enter_id;
   if (ce->compilation()->has_fpu_code()) {
