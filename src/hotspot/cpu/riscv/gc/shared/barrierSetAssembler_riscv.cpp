@@ -48,6 +48,7 @@ void BarrierSetAssembler::load_at(MacroAssembler* masm, DecoratorSet decorators,
   bool in_heap = (decorators & IN_HEAP) != 0;
   bool in_native = (decorators & IN_NATIVE) != 0;
   bool is_not_null = (decorators & IS_NOT_NULL) != 0;
+
   switch (type) {
     case T_OBJECT:  // fall through
     case T_ARRAY: {
@@ -85,22 +86,36 @@ void BarrierSetAssembler::store_at(MacroAssembler* masm, DecoratorSet decorators
                                    Address dst, Register val, Register tmp1, Register tmp2, Register tmp3) {
   bool in_heap = (decorators & IN_HEAP) != 0;
   bool in_native = (decorators & IN_NATIVE) != 0;
+  bool is_not_null = (decorators & IS_NOT_NULL) != 0;
+
   switch (type) {
     case T_OBJECT: // fall through
     case T_ARRAY: {
       val = val == noreg ? zr : val;
       if (in_heap) {
-        if (UseCompressedOops) {
-          assert(!dst.uses(val), "not enough registers");
-          if (val != zr) {
-            __ encode_heap_oop(val);
+        if (val == noreg) {
+          assert(!is_not_null, "inconsistent access");
+          if (UseCompressedOops) {
+            __ sw(zr, dst);
+          } else {
+            __ sd(zr, dst);
           }
-          __ sw(val, dst);
         } else {
-          __ sd(val, dst);
+          if (UseCompressedOops) {
+            assert(!dst.uses(val), "not enough registers");
+            if (is_not_null) {
+              __ encode_heap_oop_not_null(val);
+            } else {
+              __ encode_heap_oop(val);
+            }
+            __ sw(val, dst);
+          } else {
+            __ sd(val, dst);
+          }
         }
       } else {
         assert(in_native, "why else?");
+        assert(val != noreg, "not supported");
         __ sd(val, dst);
       }
       break;
